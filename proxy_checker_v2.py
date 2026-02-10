@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════╗
-║             Proxy Checker v2.2 — Async Engine                ║
-║  • 20+ fuentes  • SOCKS4/5 + HTTP/S  • Scoring inteligente  ║
+║             Proxy Checker v2.3 — Async Engine                ║
+║  • 30+ fuentes  • SOCKS4/5 + HTTP/S  • Scoring inteligente  ║
 ║  • 500+ conexiones async  • Geoloc  • Proxy Pool rotativo   ║
 ║  • Modo HQ riguroso  • Estimación de tiempo  • Custom URL   ║
+║  • Doble verificación  • Ctrl+C guarda progreso • Split P+Q  ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Autor: Psico777
@@ -19,6 +20,7 @@ import re
 import json
 import csv
 import time
+import signal
 import asyncio
 import random
 from datetime import datetime
@@ -50,9 +52,24 @@ os.chdir(SCRIPT_DIR)
 RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# Flag global para Ctrl+C graceful
+_STOP_REQUESTED = False
+
+
+def _handle_sigint(sig, frame):
+    global _STOP_REQUESTED
+    if _STOP_REQUESTED:
+        print(f"\n{Fore.LIGHTRED_EX}  [!!] Segundo Ctrl+C — salida forzada{Fore.RESET}")
+        sys.exit(1)
+    _STOP_REQUESTED = True
+    print(f"\n{Fore.LIGHTYELLOW_EX}  [!] Ctrl+C detectado — finalizando tareas actuales y guardando...{Fore.RESET}")
+
+
+signal.signal(signal.SIGINT, _handle_sigint)
+
 
 def safe_input(prompt: str, default: str = "") -> str:
-    """Input seguro que no crashea en terminales no interactivas (ej. VS Code Run)."""
+    """Input seguro que no crashea en terminales no interactivas."""
     try:
         value = input(prompt).strip()
         return value if value else default
@@ -61,28 +78,44 @@ def safe_input(prompt: str, default: str = "") -> str:
         return default
 
 
+def _valid_ip(ip: str) -> bool:
+    """Valida que cada octeto sea 0-255."""
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return False
+    for p in parts:
+        try:
+            n = int(p)
+            if n < 0 or n > 255:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
 class Config:
     """Configuración central ajustable."""
     MAX_CONCURRENT    = 500
-    TIMEOUT_ALIVE     = 6
+    TIMEOUT_ALIVE     = 8
     TIMEOUT_QUALITY   = 10
     TIMEOUT_FETCH     = 20
-    GEO_RATE_LIMIT    = 40        # ip-api.com = 45/min, usamos 40
+    GEO_RATE_LIMIT    = 40
 
     LATENCY_EXCELLENT = 1.0
     LATENCY_GOOD      = 2.5
     LATENCY_FAIR      = 5.0
 
+    # URLs para test de vida (se usan 2 aleatorias para doble verificación)
     ALIVE_TEST_URLS = [
         "http://httpbin.org/ip",
         "http://ip-api.com/json",
         "https://api.ipify.org?format=json",
+        "https://httpbin.org/ip",
     ]
     QUALITY_TEST_URLS = {
         "google.com":     "https://www.google.com/",
         "cloudflare":     "https://1.1.1.1/cdn-cgi/trace",
     }
-    # Targets extra para modo HQ riguroso
     HQ_TEST_URLS = {
         "google.com":       "https://www.google.com/",
         "cloudflare":       "https://1.1.1.1/cdn-cgi/trace",
@@ -200,15 +233,15 @@ class Stats:
 
 
 # ══════════════════════════════════════════════════════════════
-#                  FUENTES DE PROXIES (20+)
+#               FUENTES DE PROXIES (30+ verificadas)
 # ══════════════════════════════════════════════════════════════
 
 class ProxyFetcher:
-    """Descarga proxies de 20+ fuentes en paralelo."""
+    """Descarga proxies de 30+ fuentes en paralelo."""
 
     # (url, protocolo, tipo_fuente)  —  tipo: "api" o "github"
     SOURCES = {
-        # ═══ APIs DIRECTAS ═══
+        # ═══ APIs DIRECTAS (verificadas 2026-02-10) ═══
         "ProxyScrape HTTP": (
             "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
             ProxyProtocol.HTTP, "api"
@@ -216,18 +249,6 @@ class ProxyFetcher:
         "ProxyScrape SOCKS4": (
             "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=10000&country=all",
             ProxyProtocol.SOCKS4, "api"
-        ),
-        "ProxyScrape SOCKS5": (
-            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=all",
-            ProxyProtocol.SOCKS5, "api"
-        ),
-        "Geonode Free P1": (
-            "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc",
-            ProxyProtocol.HTTP, "api"
-        ),
-        "Geonode Free P2": (
-            "https://proxylist.geonode.com/api/proxy-list?limit=500&page=2&sort_by=lastChecked&sort_type=desc",
-            ProxyProtocol.HTTP, "api"
         ),
         "OpenProxyList HTTP": (
             "https://api.openproxylist.xyz/http.txt",
@@ -241,8 +262,12 @@ class ProxyFetcher:
             "https://api.openproxylist.xyz/socks5.txt",
             ProxyProtocol.SOCKS5, "api"
         ),
+        "ProxySpace ALL": (
+            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text",
+            ProxyProtocol.HTTP, "api"
+        ),
 
-        # ═══ GITHUB REPOS ═══
+        # ═══ GITHUB REPOS (verificados 2026-02-10) ═══
         "TheSpeedX HTTP": (
             "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
             ProxyProtocol.HTTP, "github"
@@ -287,29 +312,9 @@ class ProxyFetcher:
             "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
             ProxyProtocol.SOCKS5, "github"
         ),
-        "hookzof SOCKS5": (
-            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-            ProxyProtocol.SOCKS5, "github"
-        ),
         "roosterkid HTTPS": (
             "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
             ProxyProtocol.HTTPS, "github"
-        ),
-        "ErcinDedeworken S5": (
-            "https://raw.githubusercontent.com/ErcinDedeworken/topfreeproxies/master/socks5.txt",
-            ProxyProtocol.SOCKS5, "github"
-        ),
-        "MuRongPIG HTTP": (
-            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
-            ProxyProtocol.HTTP, "github"
-        ),
-        "MuRongPIG SOCKS4": (
-            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks4.txt",
-            ProxyProtocol.SOCKS4, "github"
-        ),
-        "MuRongPIG SOCKS5": (
-            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt",
-            ProxyProtocol.SOCKS5, "github"
         ),
         "prxchk HTTP": (
             "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
@@ -319,12 +324,87 @@ class ProxyFetcher:
             "https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt",
             ProxyProtocol.SOCKS5, "github"
         ),
+        # ═══ NUEVAS FUENTES (verificadas 2026-02-10) ═══
+        "zevtyardt HTTP": (
+            "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt",
+            ProxyProtocol.HTTP, "github"
+        ),
+        "zevtyardt SOCKS4": (
+            "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks4.txt",
+            ProxyProtocol.SOCKS4, "github"
+        ),
+        "zevtyardt SOCKS5": (
+            "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks5.txt",
+            ProxyProtocol.SOCKS5, "github"
+        ),
+        "rdavydov HTTP": (
+            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt",
+            ProxyProtocol.HTTP, "github"
+        ),
+        "rdavydov SOCKS4": (
+            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt",
+            ProxyProtocol.SOCKS4, "github"
+        ),
+        "rdavydov SOCKS5": (
+            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt",
+            ProxyProtocol.SOCKS5, "github"
+        ),
+        "sunny9577 HTTP": (
+            "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/http_proxies.txt",
+            ProxyProtocol.HTTP, "github"
+        ),
+        "mmpx12 HTTP": (
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+            ProxyProtocol.HTTP, "github"
+        ),
+        "mmpx12 HTTPS": (
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/https.txt",
+            ProxyProtocol.HTTPS, "github"
+        ),
+        "mmpx12 SOCKS4": (
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt",
+            ProxyProtocol.SOCKS4, "github"
+        ),
+        "mmpx12 SOCKS5": (
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+            ProxyProtocol.SOCKS5, "github"
+        ),
     }
 
     @staticmethod
     def _parse_ip_port(text: str) -> List[str]:
+        """Extrae IP:PORT con validación de octetos (0-255) y puertos (1-65535)."""
         pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})'
-        return [f"{m[0]}:{m[1]}" for m in re.findall(pattern, text)]
+        valid = []
+        for ip, port in re.findall(pattern, text):
+            port_int = int(port)
+            if _valid_ip(ip) and 1 <= port_int <= 65535:
+                valid.append(f"{ip}:{port}")
+        return valid
+
+    @staticmethod
+    def _parse_protocol_prefixed(text: str) -> List[Tuple[str, ProxyProtocol]]:
+        """Parsea líneas con formato protocolo://ip:port (ProxySpace etc)."""
+        results = []
+        for line in text.strip().split("\n"):
+            line = line.strip().lower()
+            if line.startswith("socks5://"):
+                addr = line.replace("socks5://", "")
+                if re.match(r'\d+\.\d+\.\d+\.\d+:\d+', addr):
+                    results.append((addr, ProxyProtocol.SOCKS5))
+            elif line.startswith("socks4://"):
+                addr = line.replace("socks4://", "")
+                if re.match(r'\d+\.\d+\.\d+\.\d+:\d+', addr):
+                    results.append((addr, ProxyProtocol.SOCKS4))
+            elif line.startswith("https://"):
+                addr = line.replace("https://", "")
+                if re.match(r'\d+\.\d+\.\d+\.\d+:\d+', addr):
+                    results.append((addr, ProxyProtocol.HTTPS))
+            elif line.startswith("http://"):
+                addr = line.replace("http://", "")
+                if re.match(r'\d+\.\d+\.\d+\.\d+:\d+', addr):
+                    results.append((addr, ProxyProtocol.HTTP))
+        return results
 
     @staticmethod
     async def _fetch_one(session: aiohttp.ClientSession, name: str, url: str,
@@ -337,21 +417,9 @@ class ProxyFetcher:
                     return results
                 text = await resp.text()
 
-                if "geonode" in name.lower():
-                    try:
-                        data = json.loads(text)
-                        for p in data.get("data", []):
-                            ip = p.get("ip", "")
-                            port = p.get("port", "")
-                            protos = p.get("protocols", ["http"])
-                            if ip and port:
-                                proto = ProxyProtocol.SOCKS5 if "socks5" in protos \
-                                    else ProxyProtocol.SOCKS4 if "socks4" in protos \
-                                    else ProxyProtocol.HTTPS if "https" in protos \
-                                    else ProxyProtocol.HTTP
-                                results.append((f"{ip}:{port}", proto))
-                    except json.JSONDecodeError:
-                        pass
+                # Detectar si el texto tiene formato protocolo://ip:port
+                if "proxyspace" in name.lower() or ("://" in text[:200] and re.search(r'(http|socks)', text[:200])):
+                    results = ProxyFetcher._parse_protocol_prefixed(text)
                 else:
                     for addr in ProxyFetcher._parse_ip_port(text):
                         results.append((addr, protocol))
@@ -380,6 +448,7 @@ class ProxyFetcher:
         print(f"{'═'*60}{Fore.RESET}\n")
 
         proxies: Dict[str, ProxyProtocol] = {}
+        dupes = 0
 
         async with aiohttp.ClientSession(
             headers={"User-Agent": random.choice(Config.USER_AGENTS)}
@@ -391,10 +460,14 @@ class ProxyFetcher:
                 if isinstance(result, Exception):
                     continue
                 for addr, proto in result:
-                    if addr not in proxies:
+                    if addr in proxies:
+                        dupes += 1
+                    else:
                         proxies[addr] = proto
 
         print(f"\n{Fore.LIGHTCYAN_EX}  📊  Total proxies únicas: {len(proxies)}{Fore.RESET}")
+        if dupes:
+            print(f"  {Fore.LIGHTBLACK_EX}🔄 Duplicadas eliminadas:  {dupes}{Fore.RESET}")
         by_proto = defaultdict(int)
         for proto in proxies.values():
             by_proto[proto.value] += 1
@@ -406,6 +479,7 @@ class ProxyFetcher:
     @staticmethod
     def load_from_file(filepath: str) -> Dict[str, ProxyProtocol]:
         proxies = {}
+        dupes = 0
         try:
             full_path = os.path.join(SCRIPT_DIR, filepath) if not os.path.isabs(filepath) else filepath
             with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -415,7 +489,10 @@ class ProxyFetcher:
                         continue
                     match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)', line)
                     if match:
-                        addr = f"{match.group(1)}:{match.group(2)}"
+                        ip, port = match.group(1), match.group(2)
+                        if not _valid_ip(ip) or not (1 <= int(port) <= 65535):
+                            continue
+                        addr = f"{ip}:{port}"
                         lower = line.lower()
                         if "socks5" in lower:
                             proto = ProxyProtocol.SOCKS5
@@ -425,8 +502,13 @@ class ProxyFetcher:
                             proto = ProxyProtocol.HTTPS
                         else:
                             proto = ProxyProtocol.HTTP
-                        proxies[addr] = proto
+                        if addr in proxies:
+                            dupes += 1
+                        else:
+                            proxies[addr] = proto
             print(f"{Fore.LIGHTGREEN_EX}  [+] Archivo: {len(proxies)} proxies de {filepath}{Fore.RESET}")
+            if dupes:
+                print(f"  {Fore.LIGHTBLACK_EX}🔄 Duplicadas eliminadas: {dupes}{Fore.RESET}")
         except FileNotFoundError:
             print(f"{Fore.LIGHTRED_EX}  [-] Archivo no encontrado: {filepath}{Fore.RESET}")
         except Exception as e:
@@ -439,11 +521,11 @@ class ProxyFetcher:
 # ══════════════════════════════════════════════════════════════
 
 class ProxyChecker:
-    """Motor async de alta velocidad para verificar proxies."""
+    """Motor async de alta velocidad con doble verificación."""
 
     def __init__(self, stats: Stats, test_targets: Optional[List[str]] = None):
         self.stats = stats
-        self.test_targets = test_targets or ["login.live.com"]
+        self.test_targets = test_targets or []
         self.my_ip: Optional[str] = None
         self.results: List[ProxyResult] = []
         self._results_lock = asyncio.Lock()
@@ -474,9 +556,10 @@ class ProxyChecker:
         except Exception:
             return None
 
-    async def _test_alive(self, session: aiohttp.ClientSession, address: str,
-                          protocol: ProxyProtocol) -> Tuple[bool, float, dict]:
-        test_url = random.choice(Config.ALIVE_TEST_URLS)
+    async def _single_alive_test(self, session: aiohttp.ClientSession, address: str,
+                                  protocol: ProxyProtocol,
+                                  test_url: str) -> Tuple[bool, float, dict]:
+        """Un solo test de vida contra un URL específico."""
         headers = {"User-Agent": random.choice(Config.USER_AGENTS)}
         timeout = aiohttp.ClientTimeout(total=Config.TIMEOUT_ALIVE)
         start = time.monotonic()
@@ -492,9 +575,13 @@ class ProxyChecker:
                         if resp.status == 200:
                             text = await resp.text()
                             try:
-                                return True, latency, json.loads(text)
-                            except Exception:
-                                return True, latency, {"raw": text[:200]}
+                                data = json.loads(text)
+                                # Validar que la respuesta contiene una IP real
+                                ip_found = data.get("ip") or data.get("origin") or data.get("query")
+                                if ip_found and re.match(r'\d+\.\d+\.\d+\.\d+', str(ip_found)):
+                                    return True, latency, data
+                            except (json.JSONDecodeError, ValueError):
+                                pass
             else:
                 async with session.get(test_url, headers=headers, timeout=timeout,
                                        proxy=f"http://{address}") as resp:
@@ -502,18 +589,48 @@ class ProxyChecker:
                     if resp.status == 200:
                         text = await resp.text()
                         try:
-                            return True, latency, json.loads(text)
-                        except Exception:
-                            return True, latency, {"raw": text[:200]}
+                            data = json.loads(text)
+                            ip_found = data.get("ip") or data.get("origin") or data.get("query")
+                            if ip_found and re.match(r'\d+\.\d+\.\d+\.\d+', str(ip_found)):
+                                return True, latency, data
+                        except (json.JSONDecodeError, ValueError):
+                            pass
         except Exception:
             pass
         return False, 0, {}
 
-    def _detect_anonymity(self, resp_data: dict) -> AnonLevel:
+    async def _test_alive(self, session: aiohttp.ClientSession, address: str,
+                          protocol: ProxyProtocol) -> Tuple[bool, float, dict]:
+        """Doble verificación: pasa 1er test → confirma con 2do test distinto."""
+        urls = random.sample(Config.ALIVE_TEST_URLS, min(2, len(Config.ALIVE_TEST_URLS)))
+
+        # Test 1
+        alive1, lat1, data1 = await self._single_alive_test(session, address, protocol, urls[0])
+        if not alive1:
+            return False, 0, {}
+
+        # Test 2 — segunda URL diferente para confirmar
+        if len(urls) > 1:
+            alive2, lat2, data2 = await self._single_alive_test(session, address, protocol, urls[1])
+            if not alive2:
+                return False, 0, {}
+            # Promediar latencia de ambos tests
+            avg_latency = (lat1 + lat2) / 2
+        else:
+            avg_latency = lat1
+
+        return True, avg_latency, data1
+
+    def _detect_anonymity(self, resp_data: dict, address: str) -> AnonLevel:
+        """Detecta nivel de anonimato verificando IP leak en la respuesta."""
+        proxy_ip = address.split(":")[0]
+
         if not self.my_ip or not resp_data:
             return AnonLevel.UNKNOWN
 
         text = json.dumps(resp_data).lower()
+
+        # Si nuestra IP real aparece → transparent
         if self.my_ip in text:
             return AnonLevel.TRANSPARENT
 
@@ -521,13 +638,22 @@ class ProxyChecker:
         if self.my_ip in origin:
             return AnonLevel.TRANSPARENT
 
+        # Si hay headers de proxy → anonymous
         headers_data = resp_data.get('headers', {})
         if isinstance(headers_data, dict):
-            for h in ['x-forwarded-for', 'via', 'x-real-ip', 'forwarded']:
+            proxy_headers = ['x-forwarded-for', 'via', 'x-real-ip', 'forwarded',
+                             'x-proxy-id', 'proxy-connection']
+            for h in proxy_headers:
                 if h in [k.lower() for k in headers_data.keys()]:
-                    if self.my_ip in str(headers_data.get(h, '')):
+                    val = str(headers_data.get(h, ''))
+                    if self.my_ip in val:
                         return AnonLevel.TRANSPARENT
                     return AnonLevel.ANONYMOUS
+
+        # La IP que devuelve debe ser la del proxy, no la nuestra
+        returned_ip = resp_data.get("ip") or resp_data.get("origin") or resp_data.get("query") or ""
+        if self.my_ip in str(returned_ip):
+            return AnonLevel.TRANSPARENT
 
         return AnonLevel.ELITE
 
@@ -565,7 +691,6 @@ class ProxyChecker:
     def _validate_target_response(self, target_name: str, text: str) -> bool:
         """Valida la respuesta según el tipo de target."""
         if target_name == "httpbin_headers":
-            # Debe devolver JSON con headers y no revelar info del proxy chain
             try:
                 data = json.loads(text)
                 return "headers" in data and len(text) > 50
@@ -578,7 +703,6 @@ class ProxyChecker:
             except Exception:
                 return False
         elif target_name == "azenv":
-            # azenv muestra los headers completos, verificar que respondió
             return len(text) > 100 and ('REMOTE_ADDR' in text or 'HTTP_HOST' in text)
         elif target_name.startswith("custom:"):
             return len(text) > 50
@@ -599,7 +723,7 @@ class ProxyChecker:
                                     data.get("country", "Unknown"),
                                     data.get("org", ""))
                         elif resp.status == 429:
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(1.5)
             except Exception:
                 pass
             return "??", "Unknown", ""
@@ -625,7 +749,6 @@ class ProxyChecker:
         if result.targets_ok:
             n_targets = len(result.targets_ok)
             n_tested = len(self.test_targets) if self.test_targets else 1
-            # Escala: si pasó todos los targets = 25 pts, proporcionalmente si no
             score += min(25, int(25 * (n_targets / max(n_tested, 1))))
 
         return min(100, score)
@@ -638,6 +761,10 @@ class ProxyChecker:
 
     async def _check_one(self, session: aiohttp.ClientSession,
                          address: str, protocol: ProxyProtocol) -> Optional[ProxyResult]:
+        global _STOP_REQUESTED
+        if _STOP_REQUESTED:
+            return None
+
         async with self._semaphore:
             ip, port_str = address.split(":")
             result = ProxyResult(
@@ -649,12 +776,15 @@ class ProxyChecker:
             await self.stats.inc('checked')
             current = self.stats.checked
 
-            if current % 250 == 0:
+            if current % 500 == 0:
                 pct = (current / max(self.stats.total, 1)) * 100
+                elapsed = self.stats.elapsed
+                remaining = ((self.stats.total - current) / max(self.stats.speed, 0.1))
                 print(
-                    f"  {Fore.LIGHTBLACK_EX}── progreso: {current}/{self.stats.total} "
+                    f"  {Fore.LIGHTBLACK_EX}── progreso: {current:,}/{self.stats.total:,} "
                     f"({pct:.0f}%) | ✅ {self.stats.alive} vivas | "
-                    f"⏱ {self.stats.speed:.0f}/seg ──{Fore.RESET}"
+                    f"⏱ {self.stats.speed:.0f}/seg | "
+                    f"~{remaining/60:.0f}m restante ──{Fore.RESET}"
                 )
 
             if not alive:
@@ -665,24 +795,26 @@ class ProxyChecker:
             result.latency_ms = round(latency, 1)
             await self.stats.inc('alive', protocol.value)
 
-            result.anon_level = self._detect_anonymity(resp_data)
+            result.anon_level = self._detect_anonymity(resp_data, address)
 
             result.country, result.country_name, result.org = await self._get_geolocation(ip)
             if result.country != "??":
                 async with self.stats.lock:
                     self.stats.by_country[result.country] += 1
 
-            for target_name in self.test_targets:
-                url = None
-                if target_name in Config.HQ_TEST_URLS:
-                    url = Config.HQ_TEST_URLS[target_name]
-                elif target_name in Config.QUALITY_TEST_URLS:
-                    url = Config.QUALITY_TEST_URLS[target_name]
-                elif target_name.startswith("custom:"):
-                    url = target_name.split("custom:", 1)[1]
-                if url:
-                    if await self._test_quality_target(session, address, protocol, target_name, url):
-                        result.targets_ok.append(target_name)
+            # Test quality targets (skip si se pidió Ctrl+C)
+            if not _STOP_REQUESTED:
+                for target_name in self.test_targets:
+                    url = None
+                    if target_name in Config.HQ_TEST_URLS:
+                        url = Config.HQ_TEST_URLS[target_name]
+                    elif target_name in Config.QUALITY_TEST_URLS:
+                        url = Config.QUALITY_TEST_URLS[target_name]
+                    elif target_name.startswith("custom:"):
+                        url = target_name.split("custom:", 1)[1]
+                    if url:
+                        if await self._test_quality_target(session, address, protocol, target_name, url):
+                            result.targets_ok.append(target_name)
 
             result.score = self._calculate_score(result)
             result.quality = self._classify(result.score)
@@ -716,6 +848,7 @@ class ProxyChecker:
             return result
 
     async def check_all(self, proxies: Dict[str, ProxyProtocol]):
+        global _STOP_REQUESTED
         self._semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT)
         self._geo_semaphore = asyncio.Semaphore(Config.GEO_RATE_LIMIT)
         self.stats.total = len(proxies)
@@ -723,17 +856,21 @@ class ProxyChecker:
 
         print(f"\n{Fore.LIGHTCYAN_EX}{'═'*60}")
         print(f"  ⚡  VERIFICACIÓN ASYNC — {Config.MAX_CONCURRENT} conexiones")
+        print(f"      Doble verificación (2 URLs por proxy)")
         print(f"{'═'*60}{Fore.RESET}")
 
         await self._detect_my_ip()
         targets_str = ", ".join(self.test_targets) if self.test_targets else "solo vida"
-        print(f"  📋 Total: {len(proxies)} | Targets: {targets_str}")
-        print(f"  ⏳ Iniciando...\n")
+        print(f"  📋 Total: {len(proxies):,} | Targets: {targets_str}")
+        print(f"  ⏳ Iniciando... (Ctrl+C para detener y guardar lo encontrado)\n")
 
         tcp_conn = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300, ssl=False)
         async with aiohttp.ClientSession(connector=tcp_conn) as session:
             tasks = [self._check_one(session, addr, proto) for addr, proto in proxies.items()]
             await asyncio.gather(*tasks, return_exceptions=True)
+
+        if _STOP_REQUESTED:
+            print(f"\n{Fore.LIGHTYELLOW_EX}  ⚠ Verificación interrumpida — guardando {len(self.results)} proxies encontradas...{Fore.RESET}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -794,7 +931,7 @@ class ProxyPool:
 # ══════════════════════════════════════════════════════════════
 
 class ProxyExporter:
-    """Exporta separando por protocolo (http.txt, socks5.txt...) y por calidad."""
+    """Exporta separando por protocolo × calidad (ej: socks4_premium.txt)."""
 
     @staticmethod
     def _save_txt(proxies: List[ProxyResult], filepath: str, header: str = ""):
@@ -852,7 +989,7 @@ class ProxyExporter:
 
         # 1. Todas las vivas
         cls._save_txt(results, os.path.join(session_dir, "all_alive.txt"),
-                      "Todas las proxies vivas")
+                      "Todas las proxies vivas — doble verificación")
         saved.append(("all_alive.txt", len(results)))
 
         # 2. SEPARADAS POR PROTOCOLO → http.txt, https.txt, socks4.txt, socks5.txt
@@ -867,7 +1004,7 @@ class ProxyExporter:
                           f"Proxies {proto.upper()} ordenadas por score")
             saved.append((fname, len(plist_sorted)))
 
-        # 3. Por calidad
+        # 3. Por calidad global
         for tier in QualityTier:
             tier_proxies = sorted([p for p in results if p.quality == tier],
                                   key=lambda x: x.score, reverse=True)
@@ -877,7 +1014,20 @@ class ProxyExporter:
                               f"Proxies {tier.value}")
                 saved.append((fname, len(tier_proxies)))
 
-        # 4. HQ Elite
+        # 4. ★ NUEVO: PROTOCOLO × CALIDAD → socks4_premium.txt, http_high.txt, etc.
+        quality_names = {"PREMIUM": "premium", "HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
+        for proto_val, proto_list in sorted(by_proto.items()):
+            by_quality_in_proto = defaultdict(list)
+            for p in proto_list:
+                by_quality_in_proto[p.quality.name].append(p)
+            for qname, qlist in by_quality_in_proto.items():
+                qlist_sorted = sorted(qlist, key=lambda x: x.score, reverse=True)
+                fname = f"{proto_val}_{quality_names[qname]}.txt"
+                cls._save_txt(qlist_sorted, os.path.join(session_dir, fname),
+                              f"{proto_val.upper()} — {qname} (Score ordenado)")
+                saved.append((fname, len(qlist_sorted)))
+
+        # 5. HQ Elite
         hq = sorted([p for p in results if p.score >= 60 and p.anon_level == AnonLevel.ELITE],
                      key=lambda x: x.score, reverse=True)
         if hq:
@@ -885,17 +1035,17 @@ class ProxyExporter:
                           "HIGH QUALITY ELITE — Score>=60 + Anonimato Elite")
             saved.append(("hq_elite.txt", len(hq)))
 
-        # 5. proxies.txt — mejores para uso directo
+        # 6. proxies.txt — mejores para uso directo
         best = sorted(results, key=lambda p: p.score, reverse=True)
         cls._save_txt(best, os.path.join(session_dir, "proxies.txt"),
                       "Todas ordenadas por score")
         cls._save_txt(best, os.path.join(SCRIPT_DIR, "proxies.txt"), "Best Proxies")
         saved.append(("proxies.txt", len(best)))
 
-        # 6-8. Detallado, JSON, CSV
+        # 7-9. Detallado, JSON, CSV
         cls._save_detailed_txt(sorted(results, key=lambda x: x.score, reverse=True),
                                os.path.join(session_dir, "detailed_report.txt"),
-                               "Reporte detallado — Proxy Checker v2.2")
+                               "Reporte detallado — Proxy Checker v2.3")
         saved.append(("detailed_report.txt", len(results)))
 
         cls._save_json(results, os.path.join(session_dir, "proxies_full.json"))
@@ -910,10 +1060,11 @@ class ProxyExporter:
         print(f"{'═'*60}{Fore.RESET}")
         for fname, count in saved:
             icon = "📋" if fname.endswith(".json") else "📊" if fname.endswith(".csv") \
-                else "⭐" if "hq" in fname else "🧦" if "socks" in fname \
-                else "🔌" if fname in ("http.txt", "https.txt") else "📄"
-            print(f"  {Fore.LIGHTGREEN_EX}{icon} {fname:30s} → {count:5d} proxies{Fore.RESET}")
-        print(f"  {Fore.LIGHTCYAN_EX}📄 proxies.txt (copia en raíz)  → {len(best):5d} proxies{Fore.RESET}")
+                else "⭐" if "hq" in fname or "premium" in fname \
+                else "🧦" if "socks" in fname \
+                else "🔌" if fname.startswith("http") else "📄"
+            print(f"  {Fore.LIGHTGREEN_EX}{icon} {fname:35s} → {count:5d} proxies{Fore.RESET}")
+        print(f"  {Fore.LIGHTCYAN_EX}📄 proxies.txt (copia en raíz)     → {len(best):5d} proxies{Fore.RESET}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -928,21 +1079,21 @@ def banner():
  ██╔═══╝ ██╔══██╗██║   ██║ ██╔██╗   ╚██╔╝
  ██║     ██║  ██║╚██████╔╝██╔╝ ██╗   ██║
  ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝
- {Fore.LIGHTYELLOW_EX}Checker v2.2 — Async Engine{Fore.RESET}
- {Fore.LIGHTWHITE_EX}SOCKS4/5 + HTTP/S │ 20+ Sources │ Smart Scoring{Fore.RESET}
+ {Fore.LIGHTYELLOW_EX}Checker v2.3 — Async Engine{Fore.RESET}
+ {Fore.LIGHTWHITE_EX}SOCKS4/5 + HTTP/S │ 30+ Sources │ Doble Verificación{Fore.RESET}
  {Fore.LIGHTBLACK_EX}─────────────────────────────────────────────{Fore.RESET}
 """)
 
 
 async def menu_source() -> Dict[str, ProxyProtocol]:
-    """Menú de fuentes (async — evita asyncio.run anidado)."""
+    """Menú de fuentes (async)."""
     print(f"{Fore.LIGHTYELLOW_EX}  ╔══════════════════════════════════════════════════════════════════════════════╗{Fore.RESET}")
     print(f"  ║  1) 📂 Archivo local        — {Fore.LIGHTBLACK_EX}Carga proxies desde un .txt en tu PC{Fore.RESET}                ║")
-    print(f"  ║  2) 🌐 Todas las fuentes    — {Fore.LIGHTBLACK_EX}APIs + GitHub repos (~15,000+ proxies){Fore.RESET}              ║")
+    print(f"  ║  2) 🌐 Todas las fuentes    — {Fore.LIGHTBLACK_EX}APIs + GitHub repos (~20,000+ proxies){Fore.RESET}              ║")
     print(f"  ║  3) 🔌 Solo HTTP/HTTPS      — {Fore.LIGHTBLACK_EX}Solo proxies web estándar, sin SOCKS{Fore.RESET}                ║")
     print(f"  ║  4) 🧦 Solo SOCKS4/5        — {Fore.LIGHTBLACK_EX}Proxies SOCKS, más anónimas y estables{Fore.RESET}              ║")
-    print(f"  ║  5) ⚡ Solo APIs directas    — {Fore.LIGHTBLACK_EX}ProxyScrape + Geonode + OpenProxy (~3,000){Fore.RESET}          ║")
-    print(f"  ║  6) 📦 Solo GitHub repos     — {Fore.LIGHTBLACK_EX}Listas masivas de repositorios públicos (~12,000+){Fore.RESET}  ║")
+    print(f"  ║  5) ⚡ Solo APIs directas    — {Fore.LIGHTBLACK_EX}ProxyScrape + OpenProxy (~8,000){Fore.RESET}                    ║")
+    print(f"  ║  6) 📦 Solo GitHub repos     — {Fore.LIGHTBLACK_EX}Listas masivas de repositorios públicos (~15,000+){Fore.RESET}  ║")
     print(f"  {Fore.LIGHTYELLOW_EX}╚══════════════════════════════════════════════════════════════════════════════╝{Fore.RESET}")
 
     choice = safe_input(f"\n  {Fore.LIGHTYELLOW_EX}Selecciona [1-6, default=2]: {Fore.RESET}", "2")
@@ -989,37 +1140,27 @@ def menu_targets() -> List[str]:
 
 
 def estimate_time(proxy_count: int, concurrency: int, targets: List[str]) -> Tuple[float, float]:
-    """Estima el tiempo en minutos (mín, máx) que tomará verificar las proxies.
-
-    Fórmula:
-      - Cada proxy toma entre 1s (rápida) y TIMEOUT_ALIVE (muerta) para alive check.
-      - ~80% de proxies mueren → promedio ~5s/proxy con timeout=6
-      - Cada target adicional agrega ~3s promedio por proxy VIVA (~20% del total)
-      - Con concurrencia C, se procesan C proxies en paralelo.
-    """
-    avg_alive_time = (Config.TIMEOUT_ALIVE * 0.80) + (1.5 * 0.20)  # promedio ponderado
-    alive_ratio = 0.15  # ~15% sobreviven generalmente
+    """Estima el tiempo en minutos (mín, máx) con doble verificación."""
+    # Con doble verificación, el alive check toma más (2 requests)
+    avg_alive_time = (Config.TIMEOUT_ALIVE * 0.80 * 1.5) + (2.5 * 0.20)
+    alive_ratio = 0.10  # con doble check, menos pasan (~10%)
     target_time_per_alive = len(targets) * 3.0 if targets else 0
 
     total_time_per_proxy = avg_alive_time + (alive_ratio * target_time_per_alive)
     batches = proxy_count / concurrency
 
-    # Optimistic: las rápidas se completan antes, overlapping
     time_min = batches * total_time_per_proxy * 0.5
-    # Realistic: incluye overhead de geo, rate limiting, etc.
     time_max = batches * total_time_per_proxy * 1.2
 
-    # Agregar tiempo por geolocalización (rate limited a 40/s aprox)
     geo_proxies = int(proxy_count * alive_ratio)
     geo_time = geo_proxies / Config.GEO_RATE_LIMIT
     time_max += geo_time
 
-    return time_min / 60, time_max / 60  # en minutos
+    return time_min / 60, time_max / 60
 
 
 def menu_time_limit(proxy_count: int, concurrency: int, targets: List[str]) -> int:
-    """Muestra estimación de tiempo y permite al usuario limitar por tiempo.
-    Retorna la cantidad de proxies a testear."""
+    """Estimación de tiempo y modo limitado."""
     time_min, time_max = estimate_time(proxy_count, concurrency, targets)
 
     print(f"\n{Fore.LIGHTCYAN_EX}{'═'*60}")
@@ -1028,14 +1169,14 @@ def menu_time_limit(proxy_count: int, concurrency: int, targets: List[str]) -> i
     print(f"  📋 Proxies a verificar:  {proxy_count:,}")
     print(f"  ⚡ Concurrencia:         {concurrency}")
     print(f"  🎯 Targets:              {len(targets)} {'('+', '.join(t[:15] for t in targets)+')' if targets else '(solo vida)'}")
+    print(f"  🔒 Verificación:         Doble (2 URLs por proxy)")
     print(f"  ⏱  Tiempo estimado:      {Fore.LIGHTYELLOW_EX}{time_min:.0f} - {time_max:.0f} minutos{Fore.RESET}")
     print()
 
     print(f"  {Fore.LIGHTYELLOW_EX}╔══════════════════════════════════════════════════════════════════════════════╗{Fore.RESET}")
-    print(f"  ║  1) ✅ Testear TODAS       — {Fore.LIGHTBLACK_EX}Verifica las {proxy_count:,} proxies completas{Fore.RESET}")
-    spaces = ' ' * max(0, 25 - len(str(proxy_count)))
-    print(f"  ║  2) ⏱  Limitar por tiempo  — {Fore.LIGHTBLACK_EX}Elige cuántos minutos dedicar, testea lo que quepa{Fore.RESET}   ║")
-    print(f"  ║  3) 🔢 Limitar por cantidad — {Fore.LIGHTBLACK_EX}Elige cuántas proxies testear manualmente{Fore.RESET}            ║")
+    print(f"  ║  1) ✅ Testear TODAS        — {Fore.LIGHTBLACK_EX}Verifica las {proxy_count:,} proxies completas{Fore.RESET}")
+    print(f"  ║  2) ⏱  Limitar por tiempo   — {Fore.LIGHTBLACK_EX}Elige cuántos minutos dedicar, testea lo que quepa{Fore.RESET}   ║")
+    print(f"  ║  3) 🔢 Limitar por cantidad  — {Fore.LIGHTBLACK_EX}Elige cuántas proxies testear manualmente{Fore.RESET}            ║")
     print(f"  {Fore.LIGHTYELLOW_EX}╚══════════════════════════════════════════════════════════════════════════════╝{Fore.RESET}")
 
     choice = safe_input(f"\n  {Fore.LIGHTYELLOW_EX}Selecciona [1-3, default=1]: {Fore.RESET}", "1")
@@ -1048,15 +1189,13 @@ def menu_time_limit(proxy_count: int, concurrency: int, targets: List[str]) -> i
         except ValueError:
             mins = 5
 
-        # Calcular cuántas proxies caben en ese tiempo
-        avg_alive_time = (Config.TIMEOUT_ALIVE * 0.80) + (1.5 * 0.20)
-        alive_ratio = 0.15
+        avg_alive_time = (Config.TIMEOUT_ALIVE * 0.80 * 1.5) + (2.5 * 0.20)
+        alive_ratio = 0.10
         target_time_per_alive = len(targets) * 3.0 if targets else 0
         total_time_per_proxy = avg_alive_time + (alive_ratio * target_time_per_alive)
-        # proxies ≈ (minutos * 60 * concurrency) / tiempo_por_proxy
         max_proxies = int((mins * 60 * concurrency) / total_time_per_proxy)
-        max_proxies = min(max_proxies, proxy_count)  # no exceder el total
-        max_proxies = max(max_proxies, 100)  # mínimo 100
+        max_proxies = min(max_proxies, proxy_count)
+        max_proxies = max(max_proxies, 100)
 
         print(f"  {Fore.LIGHTCYAN_EX}→ En {mins} min con {concurrency} conexiones se pueden testear ~{max_proxies:,} proxies{Fore.RESET}")
         return max_proxies
@@ -1098,7 +1237,7 @@ def print_final_report(stats: Stats, results: List[ProxyResult]):
     print(f"  {Fore.LIGHTWHITE_EX}🚀 Velocidad:         {stats.speed:.1f} proxies/seg{Fore.RESET}")
     print(f"  {Fore.LIGHTWHITE_EX}📋 Total verificadas:  {stats.checked}/{stats.total}{Fore.RESET}")
     print()
-    print(f"  {Fore.LIGHTGREEN_EX}✅ Vivas:     {stats.alive}{Fore.RESET}")
+    print(f"  {Fore.LIGHTGREEN_EX}✅ Vivas:     {stats.alive}  (doble verificación){Fore.RESET}")
     print(f"  {Fore.LIGHTRED_EX}❌ Muertas:   {stats.dead}{Fore.RESET}")
     print()
     print(f"  {Fore.LIGHTGREEN_EX}⭐ PREMIUM:   {stats.premium}{Fore.RESET}")
@@ -1151,7 +1290,6 @@ async def async_main():
     max_proxies = menu_time_limit(len(proxies), Config.MAX_CONCURRENT, targets)
 
     if max_proxies < len(proxies):
-        # Tomar una muestra aleatoria de las proxies
         all_items = list(proxies.items())
         random.shuffle(all_items)
         sampled = dict(all_items[:max_proxies])
@@ -1161,10 +1299,7 @@ async def async_main():
     stats = Stats()
     checker = ProxyChecker(stats, test_targets=targets)
 
-    try:
-        await checker.check_all(proxies)
-    except KeyboardInterrupt:
-        print(f"\n{Fore.LIGHTYELLOW_EX}  [!] Interrumpido por usuario{Fore.RESET}")
+    await checker.check_all(proxies)
 
     results = checker.results
     print_final_report(stats, results)
@@ -1185,6 +1320,8 @@ async def async_main():
                 print(f"    {i}. {p.protocol.value.upper():6s} {p.address:21s} "
                       f"Score:{p.score:3d} {p.anon_level.value:12s} "
                       f"{p.country} {p.latency_ms:.0f}ms 🎯{t}")
+    else:
+        print(f"\n{Fore.LIGHTYELLOW_EX}  ⚠ No se encontraron proxies vivas{Fore.RESET}")
 
     print(f"\n{Fore.LIGHTGREEN_EX}  [✓] Completado! Archivos en results/{Fore.RESET}\n")
 

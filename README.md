@@ -1,17 +1,19 @@
-# 🔍 Proxy Checker v2.1 — Async Engine
+# 🔍 Proxy Checker v2.3 — Async Engine
 
-Herramienta de alta velocidad para obtener, verificar y clasificar proxies de **20+ fuentes gratuitas** automáticamente. Separa los resultados por tipo (HTTP, HTTPS, SOCKS4, SOCKS5) y por calidad (Premium, High, Medium, Low).
+Herramienta de alta velocidad para obtener, verificar y clasificar proxies de **30+ fuentes gratuitas** automáticamente. Verifica cada proxy con **doble comprobación**, separa los resultados por tipo × calidad (ej: `socks5_premium.txt`), y guarda automáticamente al presionar Ctrl+C.
 
 ## ⚡ ¿Qué hace?
 
-1. **Descarga** proxies de 20+ fuentes (APIs + repositorios GitHub) en paralelo
-2. **Verifica** cuáles están vivas con 500+ conexiones simultáneas (async)
-3. **Mide** la latencia de cada proxy en milisegundos
-4. **Detecta** el nivel de anonimato (Elite 🛡️ / Anonymous 🔒 / Transparent 👁️)
-5. **Geolocaliza** cada proxy por país
-6. **Prueba** compatibilidad con sitios protegidos (login.live.com, Google, Cloudflare)
-7. **Puntúa** cada proxy de 0 a 100 con scoring inteligente
-8. **Exporta** resultados organizados por tipo y calidad en múltiples formatos
+1. **Descarga** proxies de 30+ fuentes (APIs + repositorios GitHub) en paralelo
+2. **Filtra duplicados** automáticamente (IP:PORT único, validación de octetos)
+3. **Doble verificación** — cada proxy se testea contra 2 URLs diferentes para eliminar falsos positivos
+4. **Mide** la latencia promedio de ambos tests en milisegundos
+5. **Detecta** el nivel de anonimato (Elite 🛡️ / Anonymous 🔒 / Transparent 👁️)
+6. **Geolocaliza** cada proxy por país
+7. **Prueba** compatibilidad con sitios protegidos (Google, Cloudflare, httpbin, azenv)
+8. **Puntúa** cada proxy de 0 a 100 con scoring inteligente
+9. **Exporta** resultados organizados por **protocolo × calidad** en múltiples formatos
+10. **Ctrl+C seguro** — guarda todo lo encontrado hasta ese momento
 
 ## 📦 Instalación
 
@@ -41,40 +43,62 @@ Se mostrará un menú interactivo con las siguientes opciones:
 | Opción | Descripción |
 |--------|-------------|
 | 1) 📂 Archivo local | Carga proxies desde un archivo `.txt` de tu PC |
-| 2) 🌐 Todas las fuentes | APIs + GitHub repos, obtiene ~15,000+ proxies **(recomendado)** |
+| 2) 🌐 Todas las fuentes | APIs + GitHub repos, obtiene ~20,000+ proxies **(recomendado)** |
 | 3) 🔌 Solo HTTP/HTTPS | Solo proxies web estándar, sin SOCKS |
-| 4) 🧦 Solo SOCKS4/5 | Proxies SOCKS, generalmente más anónimas y estables |
-| 5) ⚡ Solo APIs directas | ProxyScrape + Geonode + OpenProxy (~3,000 proxies rápidas) |
-| 6) 📦 Solo GitHub repos | Listas masivas de repositorios públicos (~12,000+) |
+| 4) 🧦 Solo SOCKS4/5 | Proxies SOCKS, generalmente más anónimas |
+| 5) ⚡ Solo APIs directas | ProxyScrape + OpenProxy (~8,000 rápidas) |
+| 6) 📦 Solo GitHub repos | Listas masivas de repositorios públicos (~15,000+) |
 
 ### Menú 2 — Tests de Calidad
 
 | Opción | Descripción |
 |--------|-------------|
-| 1) 🔐 login.live.com | Verifica si la proxy puede acceder al login de Microsoft |
+| 1) 🎯 Custom URL | Testea contra cualquier URL que tú elijas |
 | 2) 🌍 Google + Cloudflare | Test contra sitios con protección anti-bot |
-| 3) 🎯 Todos los targets | Live.com + Google + Cloudflare (test más completo) |
-| 4) ⚡ Solo vida (rápido) | Solo verifica si la proxy responde, sin tests extra |
+| 3) 🔬 HQ Riguroso | 5 targets: Google + CF + httpbin headers/ip + azenv **(más completo)** |
+| 4) ⚡ Solo vida (rápido) | Solo verifica si la proxy responde (doble check), sin targets |
 
 ### Menú 3 — Velocidad/Concurrencia
 
-| Opción | Conexiones simultáneas | Para quién |
-|--------|----------------------|------------|
+| Opción | Conexiones | Para quién |
+|--------|-----------|------------|
 | 1) 🐢 200 | Conservador | Conexiones lentas o PCs con poca RAM |
 | 2) ⚡ 500 | Recomendado | Balance entre velocidad y estabilidad |
 | 3) 🚀 800 | Agresivo | Buena conexión a internet |
-| 4) 💀 1200 | Extremo | Máxima velocidad, puede saturar la red |
+| 4) 💀 1200 | Extremo | Máxima velocidad |
+
+### Menú 4 — Control de Tiempo
+
+Antes de iniciar, el checker **estima cuánto tiempo tomará** y te da opciones:
+
+| Opción | Descripción |
+|--------|-------------|
+| 1) ✅ Testear TODAS | Verifica todas las proxies |
+| 2) ⏱ Limitar por tiempo | Dices "5 minutos" y testea lo que quepa |
+| 3) 🔢 Limitar por cantidad | Eliges cuántas proxies testear |
+
+## 🔒 Doble Verificación
+
+A diferencia de otros checkers, v2.3 **verifica cada proxy dos veces**:
+
+1. **Test 1**: Conecta a una URL aleatoria (httpbin.org/ip, ip-api.com, ipify.org)
+2. **Test 2**: Conecta a una URL **diferente** para confirmar
+
+Ambos tests deben:
+- Devolver HTTP 200
+- Contener un JSON válido con una IP real (no texto random)
+- La IP devuelta debe ser diferente a tu IP real
+
+Esto **elimina falsos positivos** donde una proxy responde una vez pero no funciona de verdad.
 
 ## 📊 Sistema de Scoring (0-100)
-
-Cada proxy recibe un puntaje basado en:
 
 | Factor | Puntos máx | Detalle |
 |--------|-----------|---------|
 | Latencia | 35 pts | <1s = 35, <2.5s = 25, <5s = 15, >5s = 5 |
 | Anonimato | 30 pts | Elite = 30, Anonymous = 20, Transparent = 5 |
 | Protocolo | 10 pts | SOCKS5 = 10, HTTPS = 8, SOCKS4 = 7, HTTP = 5 |
-| Targets OK | 25 pts | 8 pts por cada target que funciona |
+| Targets OK | 25 pts | Proporcional a % de targets superados |
 
 ### Clasificación
 
@@ -89,87 +113,89 @@ Todos los resultados se guardan en `results/YYYYMMDD_HHMMSS/`:
 
 ```
 results/20260210_153000/
-├── all_alive.txt          # Todas las proxies vivas
-├── http.txt               # Solo proxies HTTP (ordenadas por score)
-├── https.txt              # Solo proxies HTTPS
-├── socks4.txt             # Solo proxies SOCKS4
-├── socks5.txt             # Solo proxies SOCKS5
-├── quality_premium.txt    # Solo las ⭐ PREMIUM
-├── quality_high.txt       # Solo las 🟢 HIGH
-├── quality_medium.txt     # Solo las 🟡 MEDIUM
-├── quality_low.txt        # Solo las 🔴 LOW
-├── hq_elite.txt           # Score≥60 + Anonimato Elite (las mejores)
-├── detailed_report.txt    # Reporte con todos los datos por proxy
-├── proxies_full.json      # JSON completo con toda la metadata
-└── proxies.csv            # CSV para análisis en Excel/Google Sheets
+├── all_alive.txt              # Todas las proxies vivas
+├── http.txt                   # Solo HTTP (ordenadas por score)
+├── https.txt                  # Solo HTTPS
+├── socks4.txt                 # Solo SOCKS4
+├── socks5.txt                 # Solo SOCKS5
+├── http_premium.txt           # HTTP + calidad PREMIUM
+├── http_high.txt              # HTTP + calidad HIGH
+├── http_medium.txt            # HTTP + calidad MEDIUM
+├── socks4_premium.txt         # SOCKS4 + PREMIUM
+├── socks4_high.txt            # SOCKS4 + HIGH
+├── socks5_premium.txt         # SOCKS5 + PREMIUM ★ las mejores
+├── socks5_high.txt            # SOCKS5 + HIGH
+├── quality_premium.txt        # Todos los protocolos PREMIUM
+├── quality_high.txt           # Todos los protocolos HIGH
+├── hq_elite.txt               # Score≥60 + Anonimato Elite
+├── detailed_report.txt        # Reporte con todos los datos
+├── proxies_full.json          # JSON completo
+└── proxies.csv                # CSV para Excel/Sheets
 ```
 
-Además, se copia `proxies.txt` en la raíz del proyecto con todas las proxies ordenadas por score para uso directo.
+## 🛑 Ctrl+C Seguro
 
-## 📡 Fuentes de Proxies (20+)
+Si presionas **Ctrl+C** durante la verificación:
+- El checker **detiene las tareas pendientes** (no se queda colgado)
+- **Guarda todas las proxies encontradas** hasta ese momento
+- Exporta los archivos normalmente
+- Un segundo Ctrl+C fuerza la salida inmediata
 
-### APIs Directas (rápidas, ~3,000)
-- ProxyScrape (HTTP, SOCKS4, SOCKS5)
-- Geonode Free (HTTP, SOCKS)
+## 📡 Fuentes de Proxies (30+ verificadas)
+
+### APIs Directas
+- ProxyScrape (HTTP, SOCKS4)
 - OpenProxyList (HTTP, SOCKS4, SOCKS5)
+- ProxySpace ALL
 
-### GitHub Repos (masivas, ~12,000+)
-- TheSpeedX/PROXY-List
-- monosans/proxy-list
-- clarketm/proxy-list
-- jetkai/proxy-list
-- hookzof/socks5_list
-- roosterkid/openproxylist
-- ErcinDedeworken/topfreeproxies
-- MuRongPIG/Proxy-Master
-- prxchk/proxy-list
+### GitHub Repos
+- TheSpeedX/PROXY-List (HTTP, SOCKS4, SOCKS5)
+- monosans/proxy-list (HTTP, SOCKS4, SOCKS5)
+- clarketm/proxy-list (HTTP)
+- jetkai/proxy-list (HTTP, HTTPS, SOCKS4, SOCKS5)
+- roosterkid/openproxylist (HTTPS)
+- prxchk/proxy-list (HTTP, SOCKS5)
+- zevtyardt/proxy-list (HTTP, SOCKS4, SOCKS5) ★ nuevo
+- rdavydov/proxy-list (HTTP, SOCKS4, SOCKS5) ★ nuevo
+- sunny9577/proxy-scraper (HTTP) ★ nuevo
+- mmpx12/proxy-list (HTTP, HTTPS, SOCKS4, SOCKS5) ★ nuevo
+
+> Fuentes muertas eliminadas: ErcinDedeworken (404), Geonode (API vacía), ProxyScrape SOCKS5 (0 resultados), hookzof (< 15 proxies), MuRongPIG (100k+ entradas sin verificar)
 
 ## 🔄 ProxyPool — Uso Programático
-
-El checker incluye un `ProxyPool` para integrar con scrapers:
 
 ```python
 from proxy_checker_v2 import ProxyPool, ProxyResult
 
-# Después de verificar
 pool = ProxyPool(results)
 
-# Obtener la mejor proxy
-best = pool.get_best(1)[0]
-
-# Proxy aleatoria de alta calidad
-proxy = pool.get_random(min_score=60)
-
-# Rotación secuencial
-proxy = pool.get_next(protocol="socks5", min_score=50)
-
-# Filtrar por país
-proxy = pool.get_next(country="US", min_score=40)
+best = pool.get_best(1)[0]                          # La mejor
+proxy = pool.get_random(min_score=60)                # Aleatoria de calidad
+proxy = pool.get_next(protocol="socks5", min_score=50)  # Rotación
+proxy = pool.get_next(country="US", min_score=40)    # Por país
 ```
 
-## 🆚 v1.0 vs v2.1
+## 📖 Documentación Adicional
 
-| Característica | v1.0 | v2.1 |
-|---------------|------|------|
-| Motor | requests + threads | aiohttp async |
-| Conexiones simultáneas | 150 | 500-1200 |
-| Fuentes de proxies | 3 | 20+ |
-| Proxies obtenidas | ~1,300 | ~15,000+ |
-| Protocolos | Solo HTTP | HTTP/HTTPS/SOCKS4/SOCKS5 |
-| Scoring | No | 0-100 multi-factor |
-| Anonimato | No detecta | Elite/Anonymous/Transparent |
-| Geolocalización | No | Sí (país + org) |
-| Separación por tipo | No | http.txt, socks5.txt, etc. |
-| Separación por calidad | No | premium.txt, high.txt, etc. |
-| Export JSON/CSV | No | Sí |
-| ProxyPool | No | Sí (rotación inteligente) |
+- **[GUIA_DE_USO.md](GUIA_DE_USO.md)** — Guía práctica completa: dónde usar cada tipo de proxy, casos de uso por protocolo y calidad, integración con herramientas (Scrapy, Selenium, curl, etc.)
+
+## 🆚 Changelog
+
+| Versión | Cambios principales |
+|---------|-------------------|
+| v1.0 | Motor sync con requests+threads, 3 fuentes |
+| v2.0 | Motor async (aiohttp), 16 fuentes, SOCKS, scoring |
+| v2.1 | Fix EOFError, 27 fuentes, menu descriptions |
+| v2.2 | Custom URL, HQ riguroso (5 targets), estimación de tiempo |
+| **v2.3** | **Doble verificación, Ctrl+C seguro, export protocolo×calidad, 30+ fuentes verificadas, eliminadas fuentes muertas, validación IP estricta** |
 
 ## ⚠️ Notas Importantes
 
-- Las proxies gratuitas tienen **vida corta** — se recomienda ejecutar el checker antes de cada sesión de trabajo
-- El rate limit de geolocalización (ip-api.com) es de ~45 req/min, el checker lo respeta automáticamente
-- Para **máxima calidad**, usa la opción 2 (todas las fuentes) + opción 3 (todos los targets)
-- Los archivos `hq_elite.txt` contienen las proxies de **mayor calidad absoluta**
+- Las proxies gratuitas tienen **vida corta** — ejecuta el checker antes de cada sesión
+- La **doble verificación** reduce falsos positivos pero toma ~50% más de tiempo
+- Para **máxima calidad**, usa opción 3 (HQ Riguroso) + opción 2 (500 conexiones)
+- Los archivos `socks5_premium.txt` y `hq_elite.txt` contienen las **mejores proxies**
+- Ctrl+C guarda lo encontrado — puedes interrumpir si ya tienes suficientes
 
 ## 📜 Licencia
 
