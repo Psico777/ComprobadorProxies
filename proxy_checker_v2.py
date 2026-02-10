@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════╗
-║             Proxy Checker v2.1 — Async Engine                ║
+║             Proxy Checker v2.2 — Async Engine                ║
 ║  • 20+ fuentes  • SOCKS4/5 + HTTP/S  • Scoring inteligente  ║
 ║  • 500+ conexiones async  • Geoloc  • Proxy Pool rotativo   ║
+║  • Modo HQ riguroso  • Estimación de tiempo  • Custom URL   ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Autor: Psico777
@@ -78,9 +79,16 @@ class Config:
         "https://api.ipify.org?format=json",
     ]
     QUALITY_TEST_URLS = {
-        "login.live.com": "https://login.live.com/login.srf",
         "google.com":     "https://www.google.com/",
         "cloudflare":     "https://1.1.1.1/cdn-cgi/trace",
+    }
+    # Targets extra para modo HQ riguroso
+    HQ_TEST_URLS = {
+        "google.com":       "https://www.google.com/",
+        "cloudflare":       "https://1.1.1.1/cdn-cgi/trace",
+        "httpbin_headers":  "https://httpbin.org/headers",
+        "httpbin_ip":       "https://httpbin.org/ip",
+        "azenv":            "http://azenv.net/",
     }
 
     USER_AGENTS = [
@@ -543,20 +551,39 @@ class ProxyChecker:
                                      timeout=timeout, allow_redirects=True) as resp:
                         if resp.status == 200:
                             text = await resp.text()
-                            if target_name == "login.live.com":
-                                return 'PPFT' in text or 'login' in text.lower()
-                            return len(text) > 100
+                            return self._validate_target_response(target_name, text)
             else:
                 async with session.get(target_url, headers=headers, timeout=timeout,
                                        proxy=f"http://{address}", allow_redirects=True) as resp:
                     if resp.status == 200:
                         text = await resp.text()
-                        if target_name == "login.live.com":
-                            return 'PPFT' in text or 'login' in text.lower()
-                        return len(text) > 100
+                        return self._validate_target_response(target_name, text)
         except Exception:
             pass
         return False
+
+    def _validate_target_response(self, target_name: str, text: str) -> bool:
+        """Valida la respuesta según el tipo de target."""
+        if target_name == "httpbin_headers":
+            # Debe devolver JSON con headers y no revelar info del proxy chain
+            try:
+                data = json.loads(text)
+                return "headers" in data and len(text) > 50
+            except Exception:
+                return False
+        elif target_name == "httpbin_ip":
+            try:
+                data = json.loads(text)
+                return "origin" in data
+            except Exception:
+                return False
+        elif target_name == "azenv":
+            # azenv muestra los headers completos, verificar que respondió
+            return len(text) > 100 and ('REMOTE_ADDR' in text or 'HTTP_HOST' in text)
+        elif target_name.startswith("custom:"):
+            return len(text) > 50
+        else:
+            return len(text) > 100
 
     async def _get_geolocation(self, ip: str) -> Tuple[str, str, str]:
         async with self._geo_semaphore:
@@ -596,7 +623,10 @@ class ProxyChecker:
                   ProxyProtocol.HTTPS: 8, ProxyProtocol.HTTP: 5}.get(result.protocol, 0)
 
         if result.targets_ok:
-            score += min(25, len(result.targets_ok) * 8)
+            n_targets = len(result.targets_ok)
+            n_tested = len(self.test_targets) if self.test_targets else 1
+            # Escala: si pasó todos los targets = 25 pts, proporcionalmente si no
+            score += min(25, int(25 * (n_targets / max(n_tested, 1))))
 
         return min(100, score)
 
@@ -643,8 +673,14 @@ class ProxyChecker:
                     self.stats.by_country[result.country] += 1
 
             for target_name in self.test_targets:
-                if target_name in Config.QUALITY_TEST_URLS:
+                url = None
+                if target_name in Config.HQ_TEST_URLS:
+                    url = Config.HQ_TEST_URLS[target_name]
+                elif target_name in Config.QUALITY_TEST_URLS:
                     url = Config.QUALITY_TEST_URLS[target_name]
+                elif target_name.startswith("custom:"):
+                    url = target_name.split("custom:", 1)[1]
+                if url:
                     if await self._test_quality_target(session, address, protocol, target_name, url):
                         result.targets_ok.append(target_name)
 
@@ -859,7 +895,7 @@ class ProxyExporter:
         # 6-8. Detallado, JSON, CSV
         cls._save_detailed_txt(sorted(results, key=lambda x: x.score, reverse=True),
                                os.path.join(session_dir, "detailed_report.txt"),
-                               "Reporte detallado — Proxy Checker v2.1")
+                               "Reporte detallado — Proxy Checker v2.2")
         saved.append(("detailed_report.txt", len(results)))
 
         cls._save_json(results, os.path.join(session_dir, "proxies_full.json"))
@@ -892,7 +928,7 @@ def banner():
  ██╔═══╝ ██╔══██╗██║   ██║ ██╔██╗   ╚██╔╝
  ██║     ██║  ██║╚██████╔╝██╔╝ ██╗   ██║
  ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝
- {Fore.LIGHTYELLOW_EX}Checker v2.1 — Async Engine{Fore.RESET}
+ {Fore.LIGHTYELLOW_EX}Checker v2.2 — Async Engine{Fore.RESET}
  {Fore.LIGHTWHITE_EX}SOCKS4/5 + HTTP/S │ 20+ Sources │ Smart Scoring{Fore.RESET}
  {Fore.LIGHTBLACK_EX}─────────────────────────────────────────────{Fore.RESET}
 """)
@@ -929,18 +965,116 @@ async def menu_source() -> Dict[str, ProxyProtocol]:
 
 def menu_targets() -> List[str]:
     print(f"\n{Fore.LIGHTYELLOW_EX}  ╔══════════════════════════════════════════════════════════════════════════════╗{Fore.RESET}")
-    print(f"  ║  1) 🔐 login.live.com       — {Fore.LIGHTBLACK_EX}Verifica si funciona con login de Microsoft{Fore.RESET}          ║")
+    print(f"  ║  1) 🎯 Custom URL           — {Fore.LIGHTBLACK_EX}Testea contra la URL que tú elijas{Fore.RESET}                   ║")
     print(f"  ║  2) 🌍 Google + Cloudflare  — {Fore.LIGHTBLACK_EX}Test contra sitios con protección anti-bot{Fore.RESET}           ║")
-    print(f"  ║  3) 🎯 Todos los targets    — {Fore.LIGHTBLACK_EX}Live.com + Google + Cloudflare (más completo){Fore.RESET}        ║")
-    print(f"  ║  4) ⚡ Solo vida (rápido)   — {Fore.LIGHTBLACK_EX}Solo chequea si la proxy responde, sin targets{Fore.RESET}       ║")
+    print(f"  ║  3) 🔬 HQ Riguroso         — {Fore.LIGHTBLACK_EX}Google+CF+httpbin+azenv (5 targets, filtra las mejores){Fore.RESET} ║")
+    print(f"  ║  4) ⚡ Solo vida (rápido)   — {Fore.LIGHTBLACK_EX}Solo chequea si la proxy responde, sin targets extra{Fore.RESET}  ║")
     print(f"  {Fore.LIGHTYELLOW_EX}╚══════════════════════════════════════════════════════════════════════════════╝{Fore.RESET}")
 
     choice = safe_input(f"\n  {Fore.LIGHTYELLOW_EX}Selecciona [1-4, default=3]: {Fore.RESET}", "3")
 
-    if choice == "1": return ["login.live.com"]
-    elif choice == "2": return ["google.com", "cloudflare"]
-    elif choice == "3": return list(Config.QUALITY_TEST_URLS.keys())
-    else: return []
+    if choice == "1":
+        url = safe_input(
+            f"  {Fore.LIGHTYELLOW_EX}URL a testear (ej: https://example.com): {Fore.RESET}",
+            "https://www.google.com/")
+        if not url.startswith("http"):
+            url = "https://" + url
+        return [f"custom:{url}"]
+    elif choice == "2":
+        return ["google.com", "cloudflare"]
+    elif choice == "3":
+        return list(Config.HQ_TEST_URLS.keys())
+    else:
+        return []
+
+
+def estimate_time(proxy_count: int, concurrency: int, targets: List[str]) -> Tuple[float, float]:
+    """Estima el tiempo en minutos (mín, máx) que tomará verificar las proxies.
+
+    Fórmula:
+      - Cada proxy toma entre 1s (rápida) y TIMEOUT_ALIVE (muerta) para alive check.
+      - ~80% de proxies mueren → promedio ~5s/proxy con timeout=6
+      - Cada target adicional agrega ~3s promedio por proxy VIVA (~20% del total)
+      - Con concurrencia C, se procesan C proxies en paralelo.
+    """
+    avg_alive_time = (Config.TIMEOUT_ALIVE * 0.80) + (1.5 * 0.20)  # promedio ponderado
+    alive_ratio = 0.15  # ~15% sobreviven generalmente
+    target_time_per_alive = len(targets) * 3.0 if targets else 0
+
+    total_time_per_proxy = avg_alive_time + (alive_ratio * target_time_per_alive)
+    batches = proxy_count / concurrency
+
+    # Optimistic: las rápidas se completan antes, overlapping
+    time_min = batches * total_time_per_proxy * 0.5
+    # Realistic: incluye overhead de geo, rate limiting, etc.
+    time_max = batches * total_time_per_proxy * 1.2
+
+    # Agregar tiempo por geolocalización (rate limited a 40/s aprox)
+    geo_proxies = int(proxy_count * alive_ratio)
+    geo_time = geo_proxies / Config.GEO_RATE_LIMIT
+    time_max += geo_time
+
+    return time_min / 60, time_max / 60  # en minutos
+
+
+def menu_time_limit(proxy_count: int, concurrency: int, targets: List[str]) -> int:
+    """Muestra estimación de tiempo y permite al usuario limitar por tiempo.
+    Retorna la cantidad de proxies a testear."""
+    time_min, time_max = estimate_time(proxy_count, concurrency, targets)
+
+    print(f"\n{Fore.LIGHTCYAN_EX}{'═'*60}")
+    print(f"  ⏱  ESTIMACIÓN DE TIEMPO")
+    print(f"{'═'*60}{Fore.RESET}")
+    print(f"  📋 Proxies a verificar:  {proxy_count:,}")
+    print(f"  ⚡ Concurrencia:         {concurrency}")
+    print(f"  🎯 Targets:              {len(targets)} {'('+', '.join(t[:15] for t in targets)+')' if targets else '(solo vida)'}")
+    print(f"  ⏱  Tiempo estimado:      {Fore.LIGHTYELLOW_EX}{time_min:.0f} - {time_max:.0f} minutos{Fore.RESET}")
+    print()
+
+    print(f"  {Fore.LIGHTYELLOW_EX}╔══════════════════════════════════════════════════════════════════════════════╗{Fore.RESET}")
+    print(f"  ║  1) ✅ Testear TODAS       — {Fore.LIGHTBLACK_EX}Verifica las {proxy_count:,} proxies completas{Fore.RESET}")
+    spaces = ' ' * max(0, 25 - len(str(proxy_count)))
+    print(f"  ║  2) ⏱  Limitar por tiempo  — {Fore.LIGHTBLACK_EX}Elige cuántos minutos dedicar, testea lo que quepa{Fore.RESET}   ║")
+    print(f"  ║  3) 🔢 Limitar por cantidad — {Fore.LIGHTBLACK_EX}Elige cuántas proxies testear manualmente{Fore.RESET}            ║")
+    print(f"  {Fore.LIGHTYELLOW_EX}╚══════════════════════════════════════════════════════════════════════════════╝{Fore.RESET}")
+
+    choice = safe_input(f"\n  {Fore.LIGHTYELLOW_EX}Selecciona [1-3, default=1]: {Fore.RESET}", "1")
+
+    if choice == "2":
+        mins_str = safe_input(
+            f"  {Fore.LIGHTYELLOW_EX}¿Cuántos minutos quieres dedicar? [5]: {Fore.RESET}", "5")
+        try:
+            mins = max(1, int(mins_str))
+        except ValueError:
+            mins = 5
+
+        # Calcular cuántas proxies caben en ese tiempo
+        avg_alive_time = (Config.TIMEOUT_ALIVE * 0.80) + (1.5 * 0.20)
+        alive_ratio = 0.15
+        target_time_per_alive = len(targets) * 3.0 if targets else 0
+        total_time_per_proxy = avg_alive_time + (alive_ratio * target_time_per_alive)
+        # proxies ≈ (minutos * 60 * concurrency) / tiempo_por_proxy
+        max_proxies = int((mins * 60 * concurrency) / total_time_per_proxy)
+        max_proxies = min(max_proxies, proxy_count)  # no exceder el total
+        max_proxies = max(max_proxies, 100)  # mínimo 100
+
+        print(f"  {Fore.LIGHTCYAN_EX}→ En {mins} min con {concurrency} conexiones se pueden testear ~{max_proxies:,} proxies{Fore.RESET}")
+        return max_proxies
+
+    elif choice == "3":
+        cant_str = safe_input(
+            f"  {Fore.LIGHTYELLOW_EX}¿Cuántas proxies testear? [5000]: {Fore.RESET}", "5000")
+        try:
+            cant = max(100, int(cant_str))
+        except ValueError:
+            cant = 5000
+        cant = min(cant, proxy_count)
+        t_min, t_max = estimate_time(cant, concurrency, targets)
+        print(f"  {Fore.LIGHTCYAN_EX}→ {cant:,} proxies ≈ {t_min:.0f}-{t_max:.0f} minutos{Fore.RESET}")
+        return cant
+
+    else:
+        return proxy_count
 
 
 def menu_concurrency() -> int:
@@ -1012,6 +1146,17 @@ async def async_main():
 
     targets = menu_targets()
     Config.MAX_CONCURRENT = menu_concurrency()
+
+    # ── Estimación de tiempo y modo limitado ──
+    max_proxies = menu_time_limit(len(proxies), Config.MAX_CONCURRENT, targets)
+
+    if max_proxies < len(proxies):
+        # Tomar una muestra aleatoria de las proxies
+        all_items = list(proxies.items())
+        random.shuffle(all_items)
+        sampled = dict(all_items[:max_proxies])
+        print(f"\n  {Fore.LIGHTYELLOW_EX}📌 Testeando {len(sampled):,} de {len(proxies):,} proxies (muestra aleatoria){Fore.RESET}")
+        proxies = sampled
 
     stats = Stats()
     checker = ProxyChecker(stats, test_targets=targets)
